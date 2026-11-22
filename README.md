@@ -147,6 +147,120 @@ The headline experiment is an A/B on the same world and seed: the sampler runs o
 | Brain | TabPFN v3.5-fast, local on the GPU (an RTX 3060 answers a 1k-row predict in about 0.25 s) |
 | Render | NVIDIA Isaac Sim 6.0 on an L40S: chase, overhead and NavCam views |
 
+## Mars simulation data
+
+The Jezero world is built from real orbital data, not drawn by hand. A separate pipeline turns HiRISE elevation models and images into a physics world for MuJoCo and a render scene for Isaac Sim, then runs and scores missions on it. The raw data (about 500 MB) lives outside this repository; the tables below describe what it holds and what it measured.
+
+<img src="docs/images/mars/world_overview.jpg" alt="Render overview of the Jezero world built from HiRISE data" width="100%">
+
+<sub>The S1 site rendered from its HiRISE elevation model: wind ripples, a bedrock ridge and soft sand between them.</sub>
+
+### Pipeline
+
+| Step | Script | What it does | Output |
+|---|---|---|---|
+| 1. Fetch | `fetch_hirise.py` | Windowed reads of HiRISE DTMs and RED orthoimages (Cloud Optimized GeoTIFFs) from the USGS Astrogeology STAC catalogue. Only the tiles that cover the window are downloaded | `data_raw/stac/`, `data_raw/scan/` |
+| 2. Select | `select_site.py` | Scans every DTM at about 4 m/px with a 200 m sliding window, drops undrivable windows, ranks four terrain themes, then refines the best ones at full resolution | `sites.json`, `previews/cand_S*.png` |
+| 3. Build | `build_world.py` | Builds one site deterministically from a seed: heightmap, hidden terrain classes and soft-sand patches, rocks, textures, start and goal | `world/` (the world contract, `world.json`) |
+| 4. Rocks | `rocks.py` | Boulders detected in the 0.25 m image from their shadows, plus procedural rocks from the Golombek and Rapp size model, with 24 mesh variants | `world/rocks/` |
+| 5. Surface | `surface.py` | Albedo, normal, roughness and displacement maps for any region at any resolution, consistent across regions | `world/terrain_*.png` |
+| 6. Export | `export_mujoco.py`, `export_usd.py`, `convert_rover_glb.py` | MuJoCo height field and rock geoms at Mars gravity; the Isaac Sim 6.0 USD scene; NASA's Perseverance model converted to USD | `world/mujoco_terrain.*`, `world/scene_*.usdc` |
+| 7. Verify | `verify_world.py`, `preview_local.py` | Schema, file and physics checks on the world contract (exit code 0 = all passed), and top-down and 3D previews without a GPU | `world/world_preview.png`, `previews/` |
+
+### Candidate sites
+
+Four 200 × 200 m candidates from two HiRISE stereo pairs (`DTEEC_045994_1985` and `DTEEC_023524_1985`). The world uses **S1**.
+
+| Site | Theme | Centre | From the Perseverance landing site | Slope p50 / p95 | Boulders | Sand / ripples |
+|---|---|---|---|---|---|---|
+| **S1** | sand and outcrop | 18.5321° N, 77.3895° E | 6.2 km | 4.3° / 12.6° | 36 | 28% / 7% |
+| S2 | ripples (TARs) | 18.5354° N, 77.4246° E | 5.6 km | 5.9° / 14.4° | 0 | 63% / 41% |
+| S3 | crater, 112 m wide and 5 m deep | 18.3365° N, 77.5722° E | 9.4 km | 5.7° / 14.7° | 13 | 11% / 1% |
+| S4 | near the landing site | 18.4285° N, 77.4501° E | 1.0 km | 5.2° / 10.3° | 2 | 39% / 27% |
+
+<table>
+<tr>
+<td width="40%"><img src="docs/images/mars/candidate_sites_map.jpg" alt="The two HiRISE elevation models with the four candidate sites"></td>
+<td width="60%"><img src="docs/images/mars/site_S1.jpg" alt="Site S1: DTM hillshade and HiRISE orthoimage"></td>
+</tr>
+<tr>
+<td><sub>The two HiRISE elevation models with the four candidates (star: the Perseverance landing site).</sub></td>
+<td><sub>Site S1: hillshade at 1 m/px with 2 m contours, and the HiRISE image at 0.25 m/px.</sub></td>
+</tr>
+</table>
+
+### The world contract (`world.json`, site S1, seed 7)
+
+| Item | Value |
+|---|---|
+| Frame | x east, y north, z up, metres; origin at the site centre, z = 0 at the lowest point |
+| Extent | 200 × 200 m, heightmap 401 × 401 at 0.5 m, relief 13.6 m |
+| Rocks | 13,020: boulders detected in the HiRISE image plus the Golombek and Rapp model |
+| Hidden ground truth | 40 terrain patches (soft sand, bedrock, gravel) with their slip and sinkage. Sim-only: the rover's brain never reads them |
+| Textures | 4096 px over the site (4.9 cm per pixel): albedo, normal, roughness, displacement |
+| Backdrop | Near ring 600 m at 1 m, far ring 10 km at 20 m, with Mars curvature (render only, not physics) |
+| Sun | Azimuth 267°, elevation 30°, matching the HiRISE image so baked shading agrees |
+| Route check | Straight A → B is 145 m and crosses 19 m of sand with 20 rocks within 15 m; a feasible detour is 172.5 m |
+| Source | HiRISE DTM `DTEEC_045994_1985_046060_1985_U01` + orthoimage `ESP_045994_1985_RED_A_01_ORTHO`; 5,793 seam pixels repaired, 26 spikes removed |
+
+<p align="center"><img src="docs/images/mars/world_s1_map.jpg" alt="Top-down map of site S1 with hidden sand and bedrock, boulders, the straight line A to B and the detour" width="70%"></p>
+
+<p align="center"><sub>Site S1 from above: hidden soft sand (blue) and bedrock (orange), HiRISE boulders (red), the straight line A → B and the feasible detour (green).</sub></p>
+
+### Mission runs
+
+Each run writes its experience table (`experience.csv`), events, legs and poses. `geometric` is the planner without TabPFN; `tabpfn` is the same rover with TabPFN predicting slip.
+
+| Run | Brain | Legs | Sim time | Experience rows |
+|---|---|---|---|---|
+| `_station_test` | geometric | 12 | 3.2 h | 1,605 |
+| `station_20261121_210435` | geometric | 6 | 1.6 h | 815 |
+| `station_geo_cam` | geometric | 0 | 18 min | 182 |
+| `nominal_viewer` | geometric | – | 25 min | 130 |
+| `station_tabpfn` | tabpfn | 9 | 2.6 h | 1,250 |
+| `station_run1` | tabpfn | 4 | 1.9 h | 718 |
+| `station_live` | tabpfn | 0 | 21 min | 153 |
+| `station_tabpfn_cam` | tabpfn | 0 | 7 min | 36 |
+
+### TabPFN when sensors fail
+
+`eval_dropout.py` takes a rover's own experience table and knocks out sensor readings (and turns a tenth of them into wild spikes), then asks TabPFN to predict slip on the next 120 m from a 250 m context. There is no imputation and no retraining.
+
+| Sensor readings lost | Slip error (MAE) | Measured slip inside the 10–90% range (target 0.8) |
+|---|---|---|
+| 0% | 0.017 | 0.82 |
+| 10% | 0.018 | 0.77 |
+| 20% | 0.020 | 0.81 |
+| 30% | 0.023 | 0.80 |
+| 50% | 0.027 | 0.77 |
+| 70% | 0.036 | 0.83 |
+
+Even with 70% of the readings gone, the error stays about half of the no-information level (0.07, the usual slip), and the uncertainty stays honest: the range still holds about 80% of the outcomes.
+
+<img src="docs/images/mars/dropout_robustness.png" alt="TabPFN slip error and coverage as sensor readings are lost" width="100%">
+
+### Wheel health from telemetry
+
+The same table catches a failing wheel. `plot_health.py` compares each wheel's measured motor current with what TabPFN expects from the baseline table. In `station_run1` the right-middle wheel's hidden wear starts, TabPFN's warning follows, and only then does the wheel seize; it is repaired in the garage.
+
+<img src="docs/images/mars/wheel_health.png" alt="Right-middle wheel motor current against TabPFN's expected range, with wear start, warning and seizure" width="100%">
+
+<details>
+<summary><b>What's in the data folder</b> (about 500 MB, outside this repository)</summary>
+
+| Folder | Size | Contents |
+|---|---|---|
+| `data_raw/stac/` | 36 KB | STAC records of the two HiRISE DTMs and the orthoimage |
+| `data_raw/scan/` | 51 MB | 4 m scans of both DTMs and orthoimages, plus 19 full-resolution refinement windows |
+| `data_raw/sites/` | 42 MB | Site S1 at full resolution, with a 600 m CTX context ring |
+| `data_raw/rover/` | 12 MB | NASA/JPL-Caltech Perseverance 3D model (GLB) |
+| `world/` | 224 MB | The S1 world contract: heightmap, hidden class and patch maps, textures, rocks, MuJoCo and USD scenes, backdrop rings, sky |
+| `sim/runs/` | 162 MB | Eight mission runs (experience tables, events, legs, poses, health and slip checks) and the dropout results |
+| `previews/` | 14 MB | Candidate site sheets, renders and the evaluation charts |
+| `scripts/`, `sim/`, `isaac/` | < 1 MB | The pipeline above, the rover simulation (terramechanics, sensors, autonomy, station, predictors, evaluations) and Isaac checks |
+
+</details>
+
 ## Run it
 
 ```
