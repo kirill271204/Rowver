@@ -1,0 +1,49 @@
+# Cortex brain configuration: YOURS to edit.
+# Every number the brain or a body uses comes from one of four sources, and each is tagged
+# with it ("provenance"):
+#   dataset:<file>     measured from recorded data (e.g. the LAFAN1 walking clips)
+#   hardware:<mjcf>    read from the robot's model (joint limits, masses, foot size)
+#   experience:<rows>  learned by the brain from its own tries
+#   user:brain.toml    this file
+# The values below are starting settings; nothing here is tuned by the AI.
+
+# The model is fixed: TabPFN v3.5-fast, local and offline (brain/tabpfn_model.py; device and
+# estimators in .env).
+
+[memory]
+dir = "runs_brain"             # shared experience table for all robots and skills
+recall_cap = 3000              # max rows given to TabPFN per decision (context size / speed)
+fail_lookahead = 1             # a step is labelled "fail" if the robot falls during it or the next N steps
+
+[planner]
+candidates = 1024              # actions scored per decision (one batched TabPFN pass)
+cem_rounds = 2                 # refinement rounds around the best candidates
+random_tries = 8               # tries with random corrections before the brain plays its best guess
+veto_p_fail = 0.9              # reflex: never pick an action whose P(fail) is above this (if any is below)
+explore_sd = 0.1               # proposals around the reference and the best past actions: std as a fraction of each bound
+
+[objective]                    # what "good" means for a skill (higher score is better)
+w_goal = 1.0                   # match the goal (e.g. commanded speed)
+w_tilt = 0.5                   # stay upright (predicted body tilt, rad)
+w_fail = 2.0                   # avoid failure (predicted P(fail))
+w_reference = 0.2              # stay close to the recorded reference (corrections near 0)
+
+[practice]
+episode_steps = 30             # steps per episode before a reset
+
+[g1.walk]                      # Unitree G1, skill "walk_step"
+reference_repo = "lvhaidong/LAFAN1_Retargeting_Dataset"   # LAFAN1 retargeted to G1 (CC BY-NC 4.0)
+reference_glob = "g1/walk*.csv"
+goal_speed_range = [0.0, 0.5]  # commanded speeds (m/s) sampled per episode, within the recorded speeds
+reference_neighbours = 8       # at an episode start or a break in a recording: pick among this many steps nearest in speed
+                               # (otherwise the next step of the same recording is taken)
+# step extraction from the recordings
+contact_height = 0.03          # a foot is in contact when it is this close (m) to its lowest height ...
+contact_speed = 0.35           # ... and moving slower than this (m/s)
+min_contact_frames = 3         # ignore contacts shorter than this (frames at 30 FPS)
+period_range = [0.25, 1.5]     # skip steps outside this duration (s): standing still, stumbles
+# bounds of the brain's learned corrections that have no recorded counterpart
+gain_bounds.fp_gain = [0.0, 0.4]     # landing point vs measured speed (s)
+gain_bounds.k_pitch = [-0.4, 0.4]    # landing point vs IMU pitch (m/rad)
+gain_bounds.k_pr = [-0.06, 0.06]     # landing point vs IMU pitch rate (m s/rad)
+correction_scale = 1.0         # step-shape corrections may move a parameter by +/- this x half its p5-p95 spread in the recordings

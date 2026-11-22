@@ -1,0 +1,112 @@
+# Red Outpost configuration: YOURS to edit (every value is tagged user:rowver.toml).
+# Same format as the repo's brain.toml; the brain/ package reads it through brain.provenance.Config.
+
+[memory]
+dir = "runs"   # ONE experience table for every rover (relative to the repo root)
+recall_cap = 1500              # max rows given to TabPFN per decision
+fail_lookahead = 1             # a drive segment is "fail" if the rover is stuck during it or the next one
+# above recall_cap rows the context is curated, not cut (brain/hippocampus.py): rare events, recent rows,
+# then diversity; at most max_counterfactual of it from rollouts; redone every `every` new rows
+curate = { rare = 0.25, recent = 0.4, max_counterfactual = 0.5, every = 25, dup = 0.02 }
+
+[memory.news]                  # refit TabPFN's context only on news (brain/novelty.py, brain/refresh.py)
+refit = "news"                 # "every5": the old rule (all models every 5 rows or after a failure), the A/B control
+max_news_before_refit = 3      # normal and exploration news are batched
+max_rows_since_fit = 25        # staleness caps: new training rows ...
+max_fit_age_s = 600.0          # ... or seconds of driving since the fit
+tau_default = 0.5              # S = miss / (q90 - q10) above this is a surprise (tau.* calibrated offline)
+novelty_dist = 0.286            # Gower distance to the nearest context row above this is unfamiliar
+tau_fail_miss = 1.2            # log-loss of a failure: news when it failed while P(fail) < 0.30
+tau_fail_false = 2.3           # ... and when it did not fail while P(fail) > 0.90
+tau = { progress_n = 0.25, drift = 0.25, tilt_max = 0.293 }
+abs_margin = { progress_n = 0.05, drift = 0.05, tilt_max = 0.02 }   # target units (fractions, rad)
+novel_band = { progress_n = 0.361, drift = 0.153, tilt_max = 0.14 }      # band width that means "unsure"
+
+[planner]
+candidates = 128               # arcs (speed, turn) scored per drive decision (one batched TabPFN pass)
+cem_rounds = 1                 # no refinement round: a drive segment is only 1 s, decisions must be quick
+random_tries = 4               # fleet rows with random corrections before the brain plays its best guess
+veto_p_fail = 0.6               # P(fail) above this: rejected while any candidate is below it
+explore_sd = 0.1
+
+[objective]
+w_goal = 1.0                   # progress_n should be 1 (drive as far as commanded)
+w_tilt = 0.5                   # keep drift and tilt small
+w_fail = 2.0                   # avoid getting stuck
+w_reference = 0.2              # stay close to the nominal command
+risk = "lcb"                   # "lcb": score q10 progress, q90 drift and tilt (pessimistic); "mean": the old score (env CORTEX_RISK)
+
+[dock]                         # the Mission Briefing Server (dock.py)
+pack_rows = 1500               # max rows in a rover's Mission Context Pack
+corridor_m = 1.5               # rows recorded within this of the planned route / target area come first
+bay_tol = 0.3                  # m: a rover uploads only while parked within this of its bay
+
+[survey]                       # site_survey scoring (survey.py)
+photochem_q = 0.2              # the photochem quantile scored (pessimistic side)
+w_risk = 0.5                   # weight of the trafficability + core risk
+sink_ref_mm = 10.0             # sinkage that counts as 1 risk unit
+
+[practice]
+episode_steps = 150            # drive segments (1 s arcs) per try before the try is given up
+counterfactual = 3             # practice runs: arcs NOT chosen rolled out per decision from a snapshot (simulation only)
+temperature = 0.2              # practice choice: softmax over the allowed arcs' scores (its propensity is logged)
+radius = 2.5                   # m: practice points within this of the start slot
+
+[lekiwi.drive]                 # skill "drive_arc" (family rover_arc); the section name is historical:
+                               # it is the drive skill of whichever rover world.ROVER is (Perseverance 1:5)
+segment_s = 1.0                # one decision per second of driving
+speed_frac = 0.8               # nominal speed as a fraction of the top speed (top speed: hardware, from the wheel limits)
+d_speed = [-0.6, 0.0]          # the arc's speed as a change of the nominal speed (fraction): only slower
+omega_frac = 0.6               # the arc's turn rate: within +- this fraction of the top turn rate
+turn_first = 0.9               # rad: goal further off the nose than this -> scripted point turn first
+stall_segments = 12            # this many segments without getting 5 cm closer to the goal: escape turn
+stuck_progress = 0.25          # a segment that covers less than this fraction of the command failed (stuck)
+stuck_segments = 2             # this many failed segments in a row: give the leg up, back out, replan
+tip_deg = 35.0                 # tilt above this is a failure too
+arrive_tol = 0.12              # m: leg done (docking then finishes the last centimetres, scripted)
+commit_max = 2                 # sure of an arc: drive it on for up to this many more segments with no new look or
+                               # plan (inside the horizon judged when it was chosen; the shield still watches)
+commit_p_fail = 0.1            # ... only while the decision's P(fail) is below this
+commit_q10 = 0.4               # ... and its pessimistic (q10) progress is at least this (stuck is < 0.25)
+commit_spread = 0.36           # ... and its progress q90 - q10 is within this (the novelty band: not unsure)
+commit_surprise = 0.25         # ... and the last segment's progress was within this of the prediction
+commit_min_to_go = 0.25        # m: no commit on the last approach (the speed cap stops overshoot)
+
+[navcam]                       # the rover's own navigation camera on the mast (navcam.py)
+codes = true                   # DINOv2-S codes e0..e7 in the drive table (false: colour/texture/geometry only)
+window = 6.0                   # m: the local map around the rover
+cell = 0.05                    # m: its cells
+range = 3.5                    # m: depth points further than this are ignored
+haz_range = 1.3                # m: ... for the front hazcam (geometry of the near ground the deck hides)
+min_px = 3                     # pixels a cell needs in one frame to count as seen
+horizon = 0.9                  # m: an arc's ground is judged this far along it
+swath = 0.27                   # m: ... over +- this across (the rover's half-width, wheels included)
+step_veto = 0.055              # m: the wheels' physical limit (wheel radius 5.3 cm): above it an arc is never driven; below it TabPFN learns the risk from `step`
+drop_veto = 0.06               # m: ground this far below the arc's plane (a hole, a ledge down) is never driven
+grade_veto_deg = 18.0          # deg: an arc whose ground is steeper than this anywhere along a wheel track (over
+                               # ~0.2 m), up or down, is never driven: a crater wall (fresh 25-35, old 19-23 deg) can't
+                               # be climbed back out of. Open zone ground measures <= 16 deg (p99 13; 592 arcs)
+min_seen = 0.25                # an arc with less of its ground seen than this is unsafe
+w_dir = 3.0                    # weight of "closer to the goal per metre x predicted progress x speed"
+w_dead = 2.0                   # cost of an arc through a spot where this rover got stuck
+
+[safety]                       # the shield (safety.py): independent of TabPFN, watches every segment while driven
+shield = true                  # env CORTEX_SHIELD
+vetoes = true                  # the drop veto and the q90-tilt veto before a move (env CORTEX_VETOES)
+tilt_margin = 0.6              # stop above this fraction of the static tip-over angle (from the rover's geometry)
+margin = 0.15                  # m: added to the braking distance v^2 / 2a
+recheck_s = 0.2                # s: a fresh hazcam frame and a recheck of the ground within the stopping distance
+step_limit = 0.07              # m: stop for a step this tall within the stopping distance (stricter veto before: step_veto)
+drop_limit = 0.08              # m: ... or a drop this deep (drop_veto before)
+
+[nav]                          # goals for the local driver
+approach = 0.55                # m: the route ends this far before a station's park pose; docking does the rest
+
+[arm]
+seed_picks = 0
+
+[hive]                         # parallel rovers on one brain (hive/)
+epoch_s = 6.0                  # s of sim time: the shared context is re-snapshotted this often (and at once after a failure); each new context costs one refit
+batch_window_s = 0.005         # s: after a scheduler pass ends, the brain server waits this long for stragglers, then serves
+yield_r = 0.85                 # m: a driving rover waits while another is this close ahead
+yield_max_s = [4.0, 8.0]       # s: higher-priority / lower-priority rover waits this long, then replans
