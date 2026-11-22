@@ -167,6 +167,59 @@ With `--gui`, the viewer shows what TabPFN weighed for every decision. It is on 
 
 ---
 
+## 4b. The science chain: scout → scientist → sampler, and every sensor in the tables
+
+The three rovers now work like one Mars science campaign, and each one hands the next what it learned.
+
+1. **The scout learns where it is safe to drive.** At each probe it records slip (odometry against motion),
+   sinkage (wheel camera), rolling resistance (mean drive-motor torque ÷ (m·g·r), from the wheel motors) and
+   vibration (spread of the IMU acceleration). Every rover also adds a passive trafficability row every third
+   straight drive segment (slip, rolling resistance, vibration), so all driving becomes experience.
+2. **The scientist uses that experience to drive safely and find the important rocks.** It undocks with the
+   scout's rows, fits its own TabPFN site model on them and scores each vantage point by coverage minus the
+   predicted risk (q90 sinkage and slip); risky vantage points are skipped. At each vantage it takes ground
+   spectra, then looks around (four navcam frames) and reads every loose rock in range with its RMI camera
+   (size), LIBS (SiO₂), Raman (organics) and VISIR (hydration, mineral class). One row per rock (`rock_id`).
+3. **The sampler uses both.** Its briefing carries the site rows and the rock rows. Its TabPFN rock model
+   (position, orbital colour, rock type, SiO₂, hydration, size → organics) ranks the read rocks by the lower
+   quantile of organics, minus the trafficability risk at the rock; it drives there and picks the best rock
+   it has not taken yet. A second sortie takes a different rock. With no readings it falls back to the rock
+   nearest its drill hole.
+
+Sim side, the rocks are real geology now: a rock's type is the ground's mineral where it lies (basalt,
+carbonate, clay → mudstone, sand → sandstone), its colour follows its type, and its organics come from the
+spot's photochemistry plus its type. The layout changes with `--seed`.
+
+**Stereo vision.** Each rover's navcam and front hazcam are now stereo pairs (baselines 8.4 cm and 5 cm:
+Perseverance's 42 cm and 25 cm at 1:5). `rowver/stereo.py` renders both eyes, matches them with OpenCV's
+semi-global block matcher (sub-pixel, uniqueness and left-right checks, speckle filter) and triangulates
+depth = f·B/disparity; unmatched pixels stay unseen. Measured against the renderer's depth on field frames:
+median height error 5 mm under 1 m, 8 mm at 1–2 m, 19 mm at 2–3.5 m, with 65–70 % of pixels matched.
+`rowver.toml [navcam] depth = "stereo" | "render"` (env `ROWVER_DEPTH`) switches it, so the two can be
+compared on the same seed. On seed 0 both gave 0 stucks and 2 shield stops, so stereo is the default.
+
+**Visual odometry.** Between two navcam frames the rover matches ORB features, takes their 3D positions
+from the stereo depth of the first frame and solves for the camera's motion (solvePnPRansac). Slip =
+1 − visual distance ÷ the distance the wheels rolled (wheel angle × radius): how real rovers measure slip.
+The passive trafficability rows use it (`slip_vo`).
+
+**A map that outlives the window.** The navcam's 6 m local map forgets what falls behind. Each rover now also
+keeps a whole-run site map at 10 cm (`rowver/sitemap.py`): how often each cell was seen, its height spread,
+relief, colour, texture and DINOv2 codes. Every site row and every candidate the rovers score carries 16 map
+columns from it (`m_views, m_relief, m_step, m_slope, m_rough, m_val, m_sat, m_tex, m_e0..m_e7`; NaN where
+nobody looked), so FEATURES grows from 6 to 22. At the dock a rover uploads what it added; a briefed rover
+undocks with the dock's merged map, so the scientist starts with the scout's eyes (3,425 cells in the test
+run) and the sampler with both (3,997, then 5,520 on its second sortie).
+
+**Pointing the mast.** Instruments that only look straight ahead cannot see a rock off to the side, so
+`rowver/mast.py` aims them like a pan-tilt head, from their real position on the rover:
+- the scientist's RMI telescope (8°): the rock's colour and texture, and its size from its pixel extent;
+- the scientist's colour zoom pair (9 cm baseline, 25°): a parallel stereo pair, block-matched at the rock's
+  pixels -> its range and its size from the 3D extent of its points;
+- the sampler's panoramic camera bar (17 cm, 70°): the chosen rock's range and size as it arrives;
+- the sampler's drill camera: brightness and texture of the ground under the bit, before it drills.
+Every number comes from the images; the rock rows carry `rmi_*`, `zoom_*`, `pano_*` and `drill_*` columns.
+
 ## 5. The headline experiment: does the briefing help?
 
 **A/B:** the same world and seed. Scout and scientist run once, and their master table is saved. Then the sampler runs twice on copies of that table:

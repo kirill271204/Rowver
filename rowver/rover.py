@@ -87,12 +87,18 @@ class Rover:
         n_ramp = int(self.RAMP_S / self.w.m.opt.timestep)    # acceleration limit: blend the commands
         tilt, why, dt = 0.0, None, self.w.m.opt.timestep
         elapsed = n * dt
+        drv = getattr(self.kin, "drive", None) or self.kin.acts     # sensing only (read, never written):
+        tq, acc, v_prev = [], [], d.qvel[self.vadr:self.vadr + 3].copy()   # motor torque, IMU acceleration
         for k in range(0, n, 10):
             s = min(1.0, (k + 10) / max(n_ramp, 1))
             d.ctrl[self.kin.acts] = w_prev + s * (w_new - w_prev)
             self.w.step(min(10, n - k))
             R = self.true_pose()[3]
             tilt = max(tilt, float(np.arccos(np.clip(R[2, 2], -1, 1))))
+            tq.append(float(np.abs(d.actuator_force[drv]).sum()))
+            v_now = d.qvel[self.vadr:self.vadr + 3].copy()
+            acc.append((v_now - v_prev) / (min(10, n - k) * dt))
+            v_prev = v_now
             if monitor is not None:
                 why = monitor((k + 10) * dt)
                 if why:
@@ -104,8 +110,17 @@ class Rover:
         x1, y1, yaw1, _ = self.true_pose()
         c, s = np.cos(yaw0), np.sin(yaw0)
         dx, dy = x1 - x0, y1 - y0
+        # wheel-motor torque over the drive (after the ramp) -> rolling resistance = torque / (m g r);
+        # IMU vibration = spread of the chassis acceleration (m/s^2)
+        k0 = min(len(tq) - 1, max(0, n_ramp // 10)) if tq else 0
+        m_ = self.design.total_mass
+        g_ = float(np.linalg.norm(self.w.m.opt.gravity))
+        rr = float(np.mean(tq[k0:])) / max(m_ * g_ * self.design.wheel_r, 1e-9) if tq else float("nan")
+        A = np.array(acc[k0:]) if len(acc) > k0 + 2 else np.zeros((0, 3))
+        vib = float(np.linalg.norm(A - A.mean(0), axis=1).std()) if len(A) else float("nan")
+        self.last_sensing = {"rolling_res": rr, "vib": vib, "x0": x0, "y0": y0, "x1": x1, "y1": y1}
         return {"dx": c * dx + s * dy, "dy": -s * dx + c * dy, "dyaw": float(wrap(yaw1 - yaw0)), "tilt_max": tilt,
-                "x": x1, "y": y1, "yaw": yaw1, "shield": why, "elapsed": elapsed}
+                "x": x1, "y": y1, "yaw": yaw1, "shield": why, "elapsed": elapsed, "rolling_res": rr, "vib": vib}
 
     # ------------------------------------------------------------ steering law
     def twist_toward(self, heading, speed, yaw, d_omega=0.0, k_yaw=2.0):

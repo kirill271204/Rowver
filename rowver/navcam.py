@@ -129,6 +129,18 @@ class NavCam:
         self.w, self.rid, self.cfg, self.rv = world, rid, cfg, rover
         self.cam = RGBDCamera(world.m, world.d, f"{rid}/navcam", W_PX, H_PX)
         self.haz = RGBDCamera(world.m, world.d, f"{rid}/hazcam", HAZ_W, HAZ_H)
+        # depth: "stereo" = block matching on the stereo pair (stereo.py), "render" = the renderer's perfect depth
+        import os
+        self.depth_mode = os.environ.get("ROWVER_DEPTH") or str(cfg.opt("navcam.depth", "render"))
+        self.stereo = self.haz_stereo = None
+        if self.depth_mode == "stereo":
+            from .mars_rover import HAZ_BASELINE, NAV_BASELINE
+            from .stereo import StereoDepth
+            if mujoco_has_camera(world.m, f"{rid}/navcam_r"):
+                self.stereo = StereoDepth(world, f"{rid}/navcam", f"{rid}/navcam_r", W_PX, H_PX, NAV_BASELINE,
+                                          left_cam=self.cam)
+                self.haz_stereo = StereoDepth(world, f"{rid}/hazcam", f"{rid}/hazcam_r", HAZ_W, HAZ_H, HAZ_BASELINE,
+                                              max_range=2.0, min_range=0.08, left_cam=self.haz)
         self.use_codes = bool(cfg("navcam.codes")) and rover.design.dino     # DINOv2 only on rovers that run it
         if self.use_codes and encoder is None:
             from .vision import encoder as _enc
@@ -154,25 +166,86 @@ class NavCam:
     def close(self):
         self.cam.close()
         self.haz.close()
+        for s_ in (self.stereo, self.haz_stereo):
+            if s_ is not None:
+                s_.close()
 
     # ------------------------------------------------------------ frames -> the local map
     def haz_update(self):
         """One hazcam depth frame only (the safety shield, while an arc is being driven)."""
         xe, ye, _ = self.rv.pose()
         self.map.follow(xe, ye)
-        return self._fuse(self.haz, _depth(self.haz), self.cfg("navcam.haz_range"), None)
+        return self._fuse(self.haz, self._haz_depth(), self.cfg("navcam.haz_range"), None)
+
+    def _haz_depth(self):
+        if self.haz_stereo is not None:
+            import mujoco
+            mujoco.mj_forward(self.w.m, self.w.d)
+            return self.haz_stereo.depth()
+        return _depth(self.haz)
 
     def update(self):
         """One navcam frame (geometry + appearance) and one hazcam depth frame (geometry of the
         near ground the deck hides from the navcam) -> the local map. -> cells updated."""
         rgb, depth = self.cam.capture()
+        if self.stereo is not None:                          # depth from the stereo pair, not the renderer
+            depth = self.stereo.depth(rgb)
         self.last_rgb = rgb
+        self._visual_odometry(rgb, depth)
         xe, ye, _ = self.rv.pose()
         self.map.follow(xe, ye)
         n = self._fuse(self.cam, depth, self.range, rgb)
-        n += self._fuse(self.haz, _depth(self.haz), self.cfg("navcam.haz_range"), None)
+        n += self._fuse(self.haz, self._haz_depth(), self.cfg("navcam.haz_range"), None)
         self.frames += 1
+        if getattr(self, "sitemap", None) is not None:       # the whole-run map (sitemap.py)
+            self.sitemap.add_local(self.map, self.map.t == self.w.sim_time)
         return n
+
+    # ------------------------------------------------------------ stereo visual odometry
+    def _wheel_m(self):
+        """Distance the wheels say the rover rolled (mean wheel angle x radius), cumulative and signed."""
+        if not hasattr(self, "_wq"):
+            m = self.w.m
+            self._wq = [m.jnt_qposadr[m.joint(f"{self.rid}/wheel_{w}").id] for w in self.rv.design.wheels]
+        return float(np.mean(self.w.d.qpos[self._wq])) * self.rv.design.wheel_r
+
+    def _visual_odometry(self, rgb, depth):
+        """How far the camera really moved since the last navcam frame: ORB features matched between the two
+        frames, 3D points from the last frame's (stereo) depth, solvePnPRansac -> the camera's translation.
+        Compared with the wheels' rolled distance -> slip_vo = 1 - visual / wheel (self.last_vo)."""
+        import cv2
+        gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+        if not hasattr(self, "_orb"):
+            self._orb = cv2.ORB_create(800)
+            self._bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
+            self._vo_prev = None
+            self.last_vo = None
+        kp, des = self._orb.detectAndCompute(gray, None)
+        wheel = self._wheel_m()
+        prev, self._vo_prev = self._vo_prev, (kp, des, depth.copy(), wheel)
+        if prev is None or des is None or prev[1] is None:
+            return
+        kp0, des0, d0, w0 = prev
+        ms = self._bf.match(des0, des)
+        f, H, W = self.cam.f, d0.shape[0], d0.shape[1]
+        obj, img = [], []
+        for mt in ms:
+            u, v = kp0[mt.queryIdx].pt
+            z = d0[int(v), int(u)]
+            if np.isfinite(z) and 0.2 < z < 4.0:
+                obj.append(((u + 0.5 - W / 2) * z / f, (v + 0.5 - H / 2) * z / f, z))
+                img.append(kp[mt.trainIdx].pt)
+        wheel_d = abs(wheel - w0)
+        if len(obj) < 12 or wheel_d < 0.03:
+            return
+        K = np.array([[f, 0, W / 2], [0, f, H / 2], [0, 0, 1.0]])
+        ok, rvec, tvec, inl = cv2.solvePnPRansac(np.array(obj, np.float32), np.array(img, np.float32), K, None,
+                                                 reprojectionError=2.0, iterationsCount=200)
+        if not ok or inl is None or len(inl) < 10:
+            return
+        vo = float(np.linalg.norm(tvec))
+        self.last_vo = {"slip_vo": float(np.clip(1.0 - vo / wheel_d, 0.0, 1.0)), "vo_m": vo, "wheel_m": wheel_d,
+                        "inliers": int(len(inl)), "t": self.w.sim_time}
 
     def _fuse(self, cam, depth, max_range, rgb):
         Pw = cam.points(depth).reshape(-1, 3)
@@ -338,6 +411,14 @@ class NavCam:
         return pd.DataFrame(F), ex | {"end": ends, "step": step, "drop": drop, "grade": grade, "seen": frac,
                                       "samples": (cx, cy), "L": float(L[-1]),
                                  "hit": hit}
+
+
+def mujoco_has_camera(m, name) -> bool:
+    try:
+        m.camera(name)
+        return True
+    except KeyError:
+        return False
 
 
 def _depth(cam):

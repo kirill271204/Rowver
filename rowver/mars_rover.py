@@ -33,6 +33,8 @@ import mujoco
 import numpy as np
 
 CHASSIS = "chassis"
+NAV_BASELINE = 0.084           # m: navcam stereo baseline (Perseverance 42 cm at 1:5)
+HAZ_BASELINE = 0.050           # m: hazcam stereo baseline (Perseverance ~25 cm at 1:5)
 WHEELS4 = ("fl", "fr", "rl", "rr")
 WHEELS6 = ("fl", "fr", "ml", "mr", "rl", "rr")
 WHEELS = WHEELS4                                # the default design's wheels are named per design: design.wheels
@@ -277,6 +279,9 @@ def rover_spec(dsg=None, tint=None) -> mujoco.MjSpec:
     P.box(ch, [face - 0.001, ny, nz], [0.001, 0.05, 0.02], "black")                      # optics bench face
     P.camera_pair(ch, [face - 0.012, ny, nz], 0.05, 0.0065)                              # navcam stereo pair
     cam(ch, "navcam", D.navcam_pos, D.navcam_pitch, D.navcam_fovy)
+    # the stereo partners (stereo.py): the right eye of each pair, along the camera's +x (the chassis' -y).
+    # Baselines: Perseverance's navcam 42 cm and hazcam 25 cm, at 1:5
+    cam(ch, "navcam_r", np.add(D.navcam_pos, [0, -NAV_BASELINE, 0]).tolist(), D.navcam_pitch, D.navcam_fovy)
 
     # ================================================================ hazcams on the nose
     hxp, _, hzp = D.hazcam_pos
@@ -286,6 +291,7 @@ def rover_spec(dsg=None, tint=None) -> mujoco.MjSpec:
     P.chamfer(ch, [hf - 0.015, 0, hzp], [0.015, 0.05, 0.014], 0.004, "black")
     P.camera_pair(ch, [hf - 0.012, 0, hzp], 0.07, 0.006)
     cam(ch, "hazcam", D.hazcam_pos, D.hazcam_pitch, D.hazcam_fovy)
+    cam(ch, "hazcam_r", np.add(D.hazcam_pos, [0, -HAZ_BASELINE, 0]).tolist(), D.hazcam_pitch, D.hazcam_fovy)
 
     # ================================================================ per design
     if D.name == "scout":

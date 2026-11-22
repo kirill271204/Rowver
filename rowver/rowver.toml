@@ -73,6 +73,8 @@ commit_surprise = 0.25         # ... and the last segment's progress was within 
 commit_min_to_go = 0.25        # m: no commit on the last approach (the speed cap stops overshoot)
 
 [navcam]                       # the rover's own navigation camera on the mast (navcam.py)
+depth = "stereo"               # "stereo": depth from the stereo pair by block matching (stereo.py; env ROWVER_DEPTH);
+                               # "render": the renderer's perfect depth (the A/B control)
 codes = true                   # DINOv2-S codes e0..e7 in the drive table (false: colour/texture/geometry only)
 window = 6.0                   # m: the local map around the rover
 cell = 0.05                    # m: its cells
@@ -89,6 +91,9 @@ grade_veto_deg = 18.0          # deg: an arc whose ground is steeper than this a
 min_seen = 0.25                # an arc with less of its ground seen than this is unsafe
 w_dir = 3.0                    # weight of "closer to the goal per metre x predicted progress x speed"
 w_dead = 2.0                   # cost of an arc through a spot where this rover got stuck
+
+[map]                          # each rover's whole-run site map (sitemap.py), shared at the dock
+cell = 0.10                    # m
 
 [safety]                       # the shield (safety.py): independent of TabPFN, watches every segment while driven
 shield = true                  # env CORTEX_SHIELD
