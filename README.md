@@ -11,6 +11,43 @@ Rowver is a fleet of three rovers on Jezero crater (MuJoCo, 1:5 scale): the scou
 - `--no-brief` runs the A/B control: the sampler gets no briefing from the dock.
 - With `--gui`, the viewer shows the TabPFN decision panel. Keys: `9` hides or shows it, `7` switches rover, `8` turns camera follow on or off.
 
+## Isaac Sim view (Linux GPU box, e.g. Brev L40S with the Isaac Launchable)
+
+MuJoCo keeps all the logic (physics, TabPFN, decisions). Isaac Sim 6.0.1 only mirrors and renders it: live over
+a local socket, or offline from a recording. Nothing in `rowver/tools/isaac_*.py` simulates anything.
+
+Setup on the box (once):
+```
+cd ~/rowver && python3 -m venv .venv
+.venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
+.venv/bin/pip install -r requirements.txt usd-core timm         # usd-core: the recorder; timm: the navcam's DINOv2
+.venv/bin/python -m brain.check_tabpfn                          # TabPFN v3.5-fast on the GPU
+docker cp rowver/tools/. vscode:/tmp/rowver_tools/              # the Isaac scripts, into the Isaac container
+# + /tmp/rowver_tools/mars_sky.hdr, backdrop/ (HiRISE + CTX rings), navcams.json, dust_wheels.json
+```
+
+Live (watch at `https://<the instance's port-80 secure link>/viewer`):
+```
+./run_mission.sh live --scout 1 --vantage 2 --sites 1 --sampler-sorties 2 --seed 0 --live --record
+./restart_mirror.sh                      # Isaac mirror: chase view + top + overview, TabPFN panel on the left
+```
+- `run_fleet.py --live` (`rowver/live.py`) writes the static scene once (`scene.usdc`, `terrain.usdc`), copies it into
+  the container and streams the poses that moved (UDP, 30 Hz of sim time) and the panel image (TCP). It paces the
+  sim to real time (`--live-realtime`); the brain counts sim seconds, so decisions do not change.
+- `restart_mirror.sh` flags: `--views top,navcam,overview`, `--haze 0.3`, `--film-iso 70`, `--motes`, `--no-fx`,
+  `--chrome` (keep the editor UI). The mission keeps running while the mirror restarts.
+
+Fallback video from a recording (`--record`, `rowver/record.py`: animated USD + poses + panel images):
+```
+docker cp runs/<run>/record vscode:/tmp/rowver_rec
+docker exec -u ubuntu:ubuntu -w /isaac-sim vscode /isaac-sim/python.sh /tmp/rowver_tools/isaac_render.py \
+    --dir /tmp/rowver_rec --out /tmp/rowver_render --step 2          # --count 10 for a look first
+docker cp vscode:/tmp/rowver_render ~/render
+ffmpeg -framerate 15 -pattern_type glob -i "$HOME/render/frame_*.png" -c:v libx264 -pix_fmt yuv420p -crf 18 demo.mp4
+.venv/bin/python -m rowver.tools.compose_panel --frames ~/render --record runs/<run>/record --out ~/render_panel
+ffmpeg -framerate 15 -pattern_type glob -i "$HOME/render_panel/frame_*.png" -c:v libx264 -pix_fmt yuv420p -crf 18 demo_panel.mp4
+```
+
 ## Layout
 | Path | What it is |
 |---|---|

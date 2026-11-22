@@ -101,7 +101,9 @@ def add_rock(spec, name, pos, yaw, size_class, rng, tone=None):
     vol = _hull_volume(V)
     b.add_geom(name=f"{name}_geom", type=mujoco.mjtGeom.mjGEOM_MESH, meshname=f"{name}_mesh", material=mat,
                mass=float(np.clip(DENSITY * vol, 0.02, 0.12)), friction=[0.85, 0.01, 0.001], condim=4)
-    return dict(name=name, kind="rock", type=int(size_class), tone=tone), float(-V[:, 2].min())
+    ext = V.max(0) - V.min(0)
+    return dict(name=name, kind="rock", type=int(size_class), tone=tone, size_m=float(max(ext[0], ext[1]))), \
+        float(-V[:, 2].min())
 
 
 def _hull_volume(V):

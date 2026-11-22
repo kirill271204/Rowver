@@ -59,6 +59,7 @@ class DecisionPanel:
                        "stucks": 0, "shields": 0, "rows": 0, "own_rows": 0, "dec": None, "out": None,
                        "site": None, "pick": None, "how": "", "t_last": 0.0, "status": "IDLE",
                        "hist": deque(maxlen=HIST), "dest": None} for r in self.rovers}
+        self.sci, self.rpick = None, None               # the science chain: last rocks read, last rock chosen
         self.active, self.pinned, self.visible, self.follow_cam = None, None, True, True
         self._dirty, self._ver, self._drawn = True, 0, (None, None)
         self._t_img, self._shown, self._img = 0.0, False, None
@@ -199,6 +200,10 @@ class DecisionPanel:
                 s["site"] = ev
                 s["status"] = "CHOOSING SITES"
                 self.active = rid
+            elif k == "rocks":
+                self.sci = ev
+            elif k == "rock_pick":
+                self.rpick = ev
             elif k == "pick":
                 s["pick"] = ev
                 s["status"] = "PICKING"
@@ -441,5 +446,30 @@ class DecisionPanel:
             p_ = e.get("p_grasp")
             ex.append(((120, 200, 255), f"Arm grasp, try {e['try']} of {e['tries_max']}: TabPFN gave "
                        f"{_fmt_pct(p_)} for a grasp -> {'grasped it' if e['grasped'] else 'missed; that row teaches the next try'}."))
+        cam = self.f.cam.get(rid) if hasattr(self.f, "cam") else None
+        if cam is not None:                              # the rover's eyes
+            st_ = getattr(cam, "stereo", None)
+            try:
+                sv = cam.map.seen
+                seen = float(np.mean(sv() if callable(sv) else sv))
+            except Exception:
+                seen = float("nan")
+            sm_ = getattr(cam, "sitemap", None)
+            how = (f"stereo depth, {st_.valid:.0%} of pixels matched" if st_ is not None and np.isfinite(st_.valid)
+                   else "rendered depth")
+            ex.append(((120, 200, 255), (f"Eyes: {how} · {seen:.0%} of its 6 m map seen" if np.isfinite(seen)
+                                         else f"Eyes: {how}")
+                       + (f" · site map {sm_.cells} cells" if sm_ is not None else "")))
+        if self.sci is not None:
+            e = self.sci
+            ex.append(((178, 140, 255), f"Scientist read R{e['best'][5:]}: {e['lith']} · organics {e['organics']:.2f} · "
+                       f"SiO₂ {e['sio2']:.0f}% · hydration {e['hydration']:.2f} ({e['n']} rocks at this vantage)"))
+        if self.rpick is not None:
+            e = self.rpick
+            if e.get("rock"):
+                ex.append(((244, 162, 97), f"Sampler: R{e['rock'][5:]} ({e.get('lith')}), {e['how']}; organics "
+                           f"{e['organics_mid']:.2f}, at worst {e['organics_lo']:.2f}"))
+            else:
+                ex.append(((156, 165, 184), f"Sampler: nearest rock ({e['how']})"))
         v["extras"] = ex
         return v

@@ -27,6 +27,11 @@ import numpy as np
 from . import jezero as J
 
 MINERALS = ("basalt", "carbonate", "clay", "sand")
+LITHOLOGY = ("basalt", "carbonate", "mudstone", "sandstone")     # a loose rock's rock type, by the ground's mineral
+# per lithology (sim side): SiO2 wt% (LIBS), hydration index 0..1 (VISIR 1.9 um band), organics boost (Raman)
+LITHO_PROPS = {"basalt": (48.0, 0.10, -0.10), "carbonate": (12.0, 0.35, 0.10), "mudstone": (55.0, 0.75, 0.15),
+               "sandstone": (72.0, 0.15, -0.15)}
+ROCK_NOISE = {"organics": (0.03, 0.025), "sio2": (1.5, 1.0), "hydration": (0.03, 0.02), "size": (0.002, 0.002)}
 SPEC_RANGE = (0.5, 4.0)                      # m
 SPEC_NOISE = (0.03, 0.02)                    # photochem noise sd = a + b x range (m)
 TORQUE = (0.8, 3.0, 0.15)                    # N m: base + slope x hardness, noise sd
@@ -124,6 +129,38 @@ class Geology:
         tq = TORQUE[0] + TORQUE[1] * h + self.rng.normal(0, TORQUE[2])
         ok = bool(self.rng.random() < float(self.p_sample(x, y)))
         return {"drill_torque_nm": float(max(tq, 0.0)), "sample_success": float(ok)}
+
+    # ---------------------------------------------------------------- loose rocks (sim side + instruments)
+    def lithology(self, x, y) -> str:
+        """A loose rock's rock type: the ground's mineral where it lies (clay -> mudstone, sand -> sandstone)."""
+        return LITHOLOGY[int(self.mineral(x, y))]
+
+    def rock_truth(self, name: str, x, y, lith: str | None = None) -> dict:
+        """Hidden truth of one loose rock: its organics (science value) come from the spot's photochem plus its
+        rock type, with a fixed per-rock offset; SiO2 and hydration from its lithology."""
+        lith = lith or self.lithology(x, y)
+        sio2, hyd, boost = LITHO_PROPS[lith]
+        k = int("".join(ch for ch in name if ch.isdigit()) or 0)
+        g = np.random.default_rng(97 * k + 11)
+        org = float(np.clip(float(self.photochem(x, y)) + boost + g.normal(0, 0.05), 0, 1))
+        return {"lithology": lith, "organics": org, "sio2": sio2 + g.normal(0, 2.0),
+                "hydration": float(np.clip(hyd + g.normal(0, 0.05), 0, 1))}
+
+    def read_rock(self, rover_xy, rock_xy, truth: dict, size_m: float) -> dict | None:
+        """The scientist's remote rock readings from rover_xy (SuperCam-like, 0.5-4 m): RMI image -> size,
+        LIBS -> SiO2, Raman -> organics, VISIR -> hydration and mineral class. Noise grows with range."""
+        d = float(np.hypot(rock_xy[0] - rover_xy[0], rock_xy[1] - rover_xy[1]))
+        if not SPEC_RANGE[0] <= d <= SPEC_RANGE[1]:
+            return None
+        n = lambda k: ROCK_NOISE[k][0] + ROCK_NOISE[k][1] * d          # noqa: E731
+        m = LITHOLOGY.index(truth["lithology"])
+        if self.rng.random() > 0.97 - 0.04 * d:                         # misread grows with range
+            m = int(self.rng.integers(0, len(LITHOLOGY)))
+        return {"rock_organics": float(np.clip(truth["organics"] + self.rng.normal(0, n("organics")), 0, 1)),
+                "rock_sio2": float(truth["sio2"] + self.rng.normal(0, n("sio2"))),
+                "rock_hydration": float(np.clip(truth["hydration"] + self.rng.normal(0, n("hydration")), 0, 1)),
+                "rock_class": float(m), "rock_size_cm": float(100 * max(size_m + self.rng.normal(0, n("size")), 0.005)),
+                "spec_range": d}
 
     # ---------------------------------------------------------------- summaries (sim side)
     def truth(self, x, y) -> dict:

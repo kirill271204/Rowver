@@ -27,8 +27,9 @@ DESIGNS = {"r1": "scout", "r2": "scientist", "r3": "sampler"}
 
 def run(zone=0, seed=0, brief=True, fresh=True, gui=False, realtime=1.0, scout=6, vantage=2, sites=2,
         sampler_sorties=1, run_name="fleet", master_from=None, prep=True, sampler=True, verbose=True,
-        panel=True):
-    """-> (events, the run dir)."""
+        panel=True, record=False, record_fps=30.0, live=False, live_fps=30.0, live_realtime=1.0,
+        live_container="vscode"):
+    """-> (events, the run dir). record: write <run dir>/record/ for Isaac renders (record.py, read-only)."""
     from brain.provenance import ROOT, Config
     from .fleet import CONFIG, Fleet
     from .missions import FleetOps, sample_sortie, scout_sortie, survey_sortie
@@ -45,6 +46,14 @@ def run(zone=0, seed=0, brief=True, fresh=True, gui=False, realtime=1.0, scout=6
     t0 = time.time()
     fleet = Fleet(tuple(DESIGNS), zone=zone, gui=gui, realtime=realtime, seed=seed, fresh=False, designs=DESIGNS,
                   run_name=run_name, verbose=verbose, seed_from_lab=True, panel=panel)   # the arm starts from the lab's pick rows
+    rec = None
+    if record:                                     # observer only: never changes a rover or a decision
+        from .record import Recorder
+        rec = Recorder(fleet, run_dir / "record", fps=record_fps)
+    link = None
+    if live:                                       # observer only: mirrors the sim to Isaac Sim (live.py)
+        from .live import LiveLink
+        link = LiveLink(fleet, run_dir / "live", fps=live_fps, realtime=live_realtime, container=live_container or None)
     ops = FleetOps(fleet, seed=seed, brief=brief)
     fleet.say(f"fleet on zone {zone}: " + ", ".join(f"{r} {d} ({fleet.w.designs[r].total_mass:.1f} kg)"
                                                      for r, d in DESIGNS.items())
@@ -67,6 +76,12 @@ def run(zone=0, seed=0, brief=True, fresh=True, gui=False, realtime=1.0, scout=6
         for ev in events:
             f.write(json.dumps({**ev, "zone": zone, "seed": seed}, default=float) + "\n")
     summary(fleet, ops, events, time.time() - t0)
+    if link is not None:
+        print(f"live: sent {link.close()['packets']} pose packets", flush=True)
+    if rec is not None:
+        man = rec.close()
+        print(f"recorded {man['frames']} frames ({man['sim_seconds']:.0f} s of sim time, {man['geoms']} geoms, "
+              f"{man['panel_images']} panel images) -> {run_dir / 'record'}", flush=True)
     if gui and fleet.w.viewer is not None:           # keep the viewer open until its window is closed
         print("\nrun finished: close the viewer window to exit", flush=True)
         while fleet.w.viewer.is_running():
@@ -92,6 +107,24 @@ def summary(fleet, ops, events, seconds):
     if rk:
         say(f"sampler rocks: {sum(e['ok'] for e in rk)}/{len(rk)} in the tray of its bay, grasped "
             f"{sum(e.get('grasped', False) for e in rk)}/{len(rk)}, " + ", ".join(e.get("tone", e.get("why", "")) for e in rk))
+    rd = [e for e in events if e.get("event") == "sortie" and "rocks_read" in e]
+    if rd:
+        say(f"scientist read {sum(e['rocks_read'] for e in rd)} rocks")
+    if ops.chosen:
+        allr = {it["name"]: ops.rock_truth(it["name"])["organics"] for it in fleet.w.rocks}
+        best, mean = max(allr.values()), float(np.mean(list(allr.values())))
+        for name, how in ops.chosen:
+            say(f"sampler rock: {name or 'none'} ({how}) | truth (report only): organics "
+                f"{allr.get(name, float('nan')):.2f}, best rock {best:.2f}, mean {mean:.2f} over {len(allr)} rocks")
+    M = fleet.dock.master.df
+    if len(M) and "skill" in M:
+        tab = M.groupby(["skill", "robot_id"]).size().unstack(fill_value=0)
+        say("master table rows per table and rover:\n" + tab.to_string())
+        if "rock_id" in M:
+            say(f"rock rows: {int(M.rock_id.notna().sum())} ({M.rock_id.nunique()} rocks)")
+    if getattr(ops, "map_log", None):
+        say("site map cells at each docking (rover, its map, the dock's): "
+            + ", ".join(f"{r} {a}/{b}" for r, a, b in ops.map_log))
     say(f"dock: master table {len(fleet.dock.master.df)} rows | "
         + ", ".join(f"{e['rid']} {e['event']} {e.get('rows', '')}" for e in fleet.dock.log))
     say(f"{seconds / 60:.1f} min | run dir {ops.f.dir}")
@@ -114,10 +147,18 @@ def main():
     ap.add_argument("--master-from", default=None, help="copy this run dir's master table first")
     ap.add_argument("--prep-only", action="store_true", help="scout + scientist only")
     ap.add_argument("--sampler-only", action="store_true", help="sampler only")
+    ap.add_argument("--record", action="store_true", help="write <run dir>/record/ for Isaac Sim renders (record.py)")
+    ap.add_argument("--record-fps", type=float, default=30.0, help="frames per second of sim time")
+    ap.add_argument("--live", action="store_true", help="mirror the run live to Isaac Sim (live.py)")
+    ap.add_argument("--live-fps", type=float, default=30.0, help="pose packets per second of sim time")
+    ap.add_argument("--live-realtime", type=float, default=1.0, help="pace the sim to this x wall time (0: no pacing)")
+    ap.add_argument("--live-container", default="vscode", help="docker container that runs Isaac ('' : no copy)")
     a = ap.parse_args()
     run(zone=a.zone, seed=a.seed, brief=not a.no_brief, fresh=a.fresh, gui=a.gui, realtime=a.realtime, scout=a.scout,
         vantage=a.vantage, sites=a.sites, sampler_sorties=a.sampler_sorties, run_name=a.run_name,
-        master_from=a.master_from, prep=not a.sampler_only, sampler=not a.prep_only, panel=not a.no_panel)
+        master_from=a.master_from, prep=not a.sampler_only, sampler=not a.prep_only, panel=not a.no_panel,
+        record=a.record, record_fps=a.record_fps, live=a.live, live_fps=a.live_fps, live_realtime=a.live_realtime,
+        live_container=a.live_container)
 
 
 if __name__ == "__main__":

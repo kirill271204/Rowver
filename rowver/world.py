@@ -547,11 +547,19 @@ def build(rovers=("r1", "r2", "r3"), gravity="mars", gui=False, realtime=1.0, se
 
     # ---- the loose sample rocks, resting on the natural ground around the drill sites
     items = []
-    grng = np.random.default_rng(int(abs(zrect[0]) * 13 + abs(zrect[2]) * 7) + 1)
+    # the layout changes with the seed (sim side); each rock's type is the ground's geology where it lies
+    grng = np.random.default_rng(int(abs(zrect[0]) * 13 + abs(zrect[2]) * 7) + 1 + 1009 * int(seed))
     spots = rock_spots if rock_spots is not None else (SR.scatter(drill_sites, grng) if rocks else [])
+    geo = None
+    if len(spots) and site is not None:
+        from types import SimpleNamespace
+
+        from .geology import Geology
+        geo = Geology(SimpleNamespace(site=site, craters=list(craters), zone=tuple(zrect)), seed=seed)
     if len(spots):
         for k, (x, y, yaw, cls) in enumerate(spots):
-            it, _ = SR.add_rock(spec, f"srock{k}", [x, y, float(ground(x, y)) + 0.03], yaw, cls, grng)
+            tone = geo.lithology(x, y) if geo is not None else None
+            it, _ = SR.add_rock(spec, f"srock{k}", [x, y, float(ground(x, y)) + 0.03], yaw, cls, grng, tone=tone)
             items.append(it)
 
     # ---- fixed overhead survey cameras: the zone's and the traverse tiles' ("orbital" views)
