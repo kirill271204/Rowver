@@ -17,6 +17,23 @@ TabPFN reads a table of their shared experience to make every decision.
 
 ---
 
+## From the demo
+
+Stills from the 3-minute demo video. Each rover drives in Isaac Sim with its live TabPFN decision panel on the left: the arcs it weighed, the arc it chose, and its prediction against what really happened.
+
+<table>
+<tr>
+<td width="33%"><img src="docs/images/demo_pathfinder.jpg" alt="Pathfinder, the scout, driving with its TabPFN decision panel"></td>
+<td width="33%"><img src="docs/images/demo_spectra.jpg" alt="Spectra, the scientist, driving with its TabPFN decision panel"></td>
+<td width="33%"><img src="docs/images/demo_hauler.jpg" alt="Hauler, the sampler, driving with its TabPFN decision panel"></td>
+</tr>
+<tr>
+<td><sub><b>Pathfinder</b> · scout. Probes the ground first.</sub></td>
+<td><sub><b>Spectra</b> · scientist. Reads every rock in range.</sub></td>
+<td><sub><b>Hauler</b> · sampler. Drills, picks the best rock, brings it home.</sub></td>
+</tr>
+</table>
+
 ## The idea
 
 Mars is up to 22 minutes away by radio, so a rover cannot wait for Earth every time the ground changes under its wheels. It has to decide alone.
@@ -81,16 +98,13 @@ Rovers do not stream rows to each other while they are out.
 
 So when Pathfinder sinks in soft sand, that probe row becomes a rare event. It rides in every pack whose route passes nearby, and Spectra and Hauler steer around sand they have never seen. The cheapest rover makes the mistake once, and the whole fleet remembers it.
 
-<table>
-<tr>
-<td width="50%"><img src="docs/images/overhead_tracks.jpg" alt="Overhead camera: tracks leading out of the garage bay"></td>
-<td width="50%"><img src="docs/images/station_ripples.jpg" alt="The station between the wind ripples"></td>
-</tr>
-<tr>
-<td><sub>Overhead camera: tracks leading out of the garage bay.</sub></td>
-<td><sub>The station between the ripples. Every rover returns here to charge.</sub></td>
-</tr>
-</table>
+**The fleet loop, phase by phase.** The master table fills as each rover docks; rows from the soft sand carry the rare-event tag.
+
+| Phase | |
+|---|---|
+| **1 · Scout.** Pathfinder probes site 2 and finds soft sand: slip 0.48, sinkage 41 mm. The row becomes a rare event. | <img src="docs/images/fleet_loop_1_scout.jpg" alt="Fleet loop phase 1: Pathfinder probes the soft sand" width="560"> |
+| **2 · Scientist.** Spectra undocks with the scout's rows, so its own TabPFN routes around sand it has never seen. | <img src="docs/images/fleet_loop_2_scientist.jpg" alt="Fleet loop phase 2: Spectra surveys and routes around the sand" width="560"> |
+| **3 · Sampler.** Hauler's pack holds the rock scores, the sand and its own past drives. It drives the proven corridor and cores the best site. | <img src="docs/images/fleet_loop_3_sampler.jpg" alt="Fleet loop phase 3: Hauler drills the chosen site" width="560"> |
 
 ## Measured
 
@@ -112,6 +126,17 @@ The headline experiment is an A/B on the same world and seed: the sampler runs o
 <img src="docs/images/navcam.jpg" alt="A rover's NavCam view across the Jezero wind ripples" width="100%">
 
 <sub>What a rover sees: the NavCam view across the wind ripples of the delta front.</sub>
+
+<table>
+<tr>
+<td width="50%"><img src="docs/images/overhead_tracks.jpg" alt="Overhead camera: tracks leading out of the garage bay"></td>
+<td width="50%"><img src="docs/images/station_ripples.jpg" alt="The station between the wind ripples"></td>
+</tr>
+<tr>
+<td><sub>Overhead camera: tracks leading out of the garage bay.</sub></td>
+<td><sub>The station between the ripples. Every rover returns here to charge.</sub></td>
+</tr>
+</table>
 
 | | |
 |---|---|
